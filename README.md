@@ -78,19 +78,19 @@ fact_traffic_counts
 ## Sample analyses
 
 ### Top 10 busiest road segments
-![Busiest roads](screenshots/01_busiest_roads.png)
+![Busiest roads](sample_analyses_images/01_busiest_roads.png)
 
 ### Monthly traffic trend — Canterbury
-![Monthly trend](screenshots/02_monthly_trend.png)
+![Monthly trend](sample_analyses_images/02_monthly_trend.png)
 
 ### Heavy vehicle share by road class
-![Heavy vehicles](screenshots/03_heavy_vehicle_pct.png)
+![Heavy vehicles](sample_analyses_images/03_heavy_vehicle_pct.png)
 
 ### Average traffic by day of week
-![Day of week](screenshots/04_dow_traffic.png)
+![Day of week](sample_analyses_images/04_dow_traffic.png)
 
 ### Top 10 monitoring sites by AADT
-![Top sites](screenshots/05_top_sites_aadt.png)
+![Top sites](sample_analyses_images/05_top_sites_aadt.png)
 
 ---
 
