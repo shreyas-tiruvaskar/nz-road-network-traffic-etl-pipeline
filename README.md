@@ -132,51 +132,37 @@ terraform init
 terraform apply -var="azure_sas_token=<your-sas-token>"
 ```
 
-### Running a pipeline update
+### Running the pipeline
 
-The date is the key parameter that connects all layers. It identifies which bronze
-partition the silver notebook reads from, and must match the date used in the
-upload step.
-
-**Step 1 — Upload raw data to S3**
 ```bash
-python upload_to_s3.py --date 2026-03-20
-```
-This uploads OSM and Waka Kotahi files to `s3://nz-road-pipeline-raw/<source>/2026-03-20/`.
-The Lambda fires automatically for each new file and copies it to
-`adls://medallion/bronze/<source>/2026-03-20/`.
-
-**Step 2 — Trigger the Databricks workflow**
-
-In Databricks: **Jobs → road_pipeline_silver_gold → Run now with different parameters**
-
-Set the parameter:
-```
-bronze_date = 2026-03-20
+# Upload raw data to S3 — this sets the whole pipeline in motion
+python upload_to_s3.py
 ```
 
-The silver notebook reads this parameter via `dbutils.widgets.get("bronze_date")`
-and constructs the bronze input paths accordingly:
-```
-bronze/osm/christchurch/2026-03-20/
-bronze/waka_kotahi/2026-03-20/
-```
+That's it. Under the hood this:
+1. Fetches the latest Christchurch road network live from OpenStreetMap
+2. Reads the Waka Kotahi CSVs from your local `downloads/` folder
+3. Uploads everything to S3 under today's date partition
+4. The Lambda fires automatically for each new file and copies it to ADLS `bronze/`
 
-The gold notebook inherits the same parameter but does not use it directly —
-it always reads from the latest silver Delta tables regardless of date.
+Then trigger the Databricks workflow to transform bronze → silver → gold:
 
-> **When to re-run:** OSM road network data is fetched live on each run so it
-> always reflects the current state of Christchurch roads. The Waka Kotahi
-> traffic counts are a historical snapshot (2018–2022) and should be refreshed
-> manually when Waka Kotahi publishes a new export. See `DATA_SOURCES.md` for
-> download instructions. When refreshing Waka Kotahi data, use the new
-> download date as the `--date` parameter so the new bronze partition is
-> kept separate from previous runs.
+**Databricks: Jobs → road_pipeline_silver_gold → Run now with different parameters**
+
+Set `bronze_date` to today's date (e.g. `2026-03-25`). This tells the silver
+notebook which bronze partition to read from — it must match the date the
+upload script used (defaults to today if `--date` was not specified).
+
+> **Refreshing Waka Kotahi data:** When Waka Kotahi publishes a new export,
+> download it, replace the files in `downloads/`, and re-run `upload_to_s3.py`.
+> The OSM road network is always fetched live so no action is needed for that.
+> See `DATA_SOURCES.md` for download instructions.
 
 ### Skipping individual sources
 ```bash
-python upload_to_s3.py --date 2026-03-20 --skip-osm            # Waka Kotahi only
-python upload_to_s3.py --date 2026-03-20 --skip-waka-kotahi    # OSM only
+python upload_to_s3.py --skip-osm            # Waka Kotahi only (e.g. after a data refresh)
+python upload_to_s3.py --skip-waka-kotahi    # OSM only
+python upload_to_s3.py --date 2026-03-20     # Reprocess a specific date partition
 ```
 
 ---
