@@ -133,16 +133,45 @@ terraform apply -var="azure_sas_token=<your-sas-token>"
 ```
 
 ### Running a pipeline update
-```bash
-# 1. Upload raw data to S3 (Lambda auto-copies to ADLS bronze)
-python upload_to_s3.py --date 2026-03-20
 
-# 2. Trigger Databricks workflow (silver → gold)
-#    In Databricks: Jobs → road_pipeline_silver_gold → Run now with parameters
-#    Parameter: bronze_date = 2026-03-20
+The date is the key parameter that connects all layers. It identifies which bronze
+partition the silver notebook reads from, and must match the date used in the
+upload step.
+
+**Step 1 — Upload raw data to S3**
+```bash
+python upload_to_s3.py --date 2026-03-20
+```
+This uploads OSM and Waka Kotahi files to `s3://nz-road-pipeline-raw/<source>/2026-03-20/`.
+The Lambda fires automatically for each new file and copies it to
+`adls://medallion/bronze/<source>/2026-03-20/`.
+
+**Step 2 — Trigger the Databricks workflow**
+
+In Databricks: **Jobs → road_pipeline_silver_gold → Run now with different parameters**
+
+Set the parameter:
+```
+bronze_date = 2026-03-20
 ```
 
-> **When to re-run:** The OSM road network is fetched live on each run. The Waka Kotahi traffic counts are a historical snapshot (2018–2022) that should be refreshed manually when Waka Kotahi publishes a new export. See `DATA_SOURCES.md` for download instructions.
+The silver notebook reads this parameter via `dbutils.widgets.get("bronze_date")`
+and constructs the bronze input paths accordingly:
+```
+bronze/osm/christchurch/2026-03-20/
+bronze/waka_kotahi/2026-03-20/
+```
+
+The gold notebook inherits the same parameter but does not use it directly —
+it always reads from the latest silver Delta tables regardless of date.
+
+> **When to re-run:** OSM road network data is fetched live on each run so it
+> always reflects the current state of Christchurch roads. The Waka Kotahi
+> traffic counts are a historical snapshot (2018–2022) and should be refreshed
+> manually when Waka Kotahi publishes a new export. See `DATA_SOURCES.md` for
+> download instructions. When refreshing Waka Kotahi data, use the new
+> download date as the `--date` parameter so the new bronze partition is
+> kept separate from previous runs.
 
 ### Skipping individual sources
 ```bash
