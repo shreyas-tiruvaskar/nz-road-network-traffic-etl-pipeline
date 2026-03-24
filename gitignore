@@ -1,0 +1,34 @@
+# Raw data downloads — too large for Git, see DATA_SOURCES.md
+downloads/
+
+# Local bronze/silver/gold data
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.egg-info/
+dist/
+build/
+
+# Terraform state — contains sensitive infrastructure details
+*.tfstate
+*.tfstate.backup
+.terraform/
+*.tfvars
+
+# Lambda build artifacts
+lambda_build/
+lambda_package.zip
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Screenshots placeholder — actual screenshots committed
+screenshots/.gitkeep
