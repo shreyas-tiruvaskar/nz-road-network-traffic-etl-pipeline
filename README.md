@@ -26,7 +26,7 @@ A multi-cloud data engineering pipeline that ingests public road and traffic dat
 │  ├── silver/   cleaned Delta tables                                  │
 │  └── gold/     star schema Delta tables                              │
 │                                                                      │
-│  Databricks Workflow: silver_layer → gold_layer                      │
+│  Databricks Workflow: silver_layer → gold_layer (auto-triggered)    │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -40,14 +40,19 @@ A multi-cloud data engineering pipeline that ingests public road and traffic dat
 | [Waka Kotahi NZ Transport Agency](https://opendata-nzta.opendata.arcgis.com) | TMS daily traffic counts | CSV → Parquet | Manual download — see `DATA_SOURCES.md` |
 | [Waka Kotahi NZ Transport Agency](https://opendata-nzta.opendata.arcgis.com) | State highway monitoring sites | CSV → Parquet | Manual download — see `DATA_SOURCES.md` |
 
-> **Note on Waka Kotahi data:** The ArcGIS Hub download URLs change periodically when Waka Kotahi updates their open data portal. Rather than hardcoding a URL that may break, the pipeline treats the Waka Kotahi CSVs as manually-managed inputs. Download instructions and the exact datasets used are documented in [`DATA_SOURCES.md`](DATA_SOURCES.md). The pipeline is designed to be re-run whenever a new data export is published.
+> **Note on Waka Kotahi data:** The ArcGIS Hub download URLs change periodically
+> when Waka Kotahi updates their open data portal. Rather than hardcoding a URL
+> that may break, the pipeline treats the Waka Kotahi CSVs as manually-managed
+> inputs. Download instructions and the exact datasets used are documented in
+> [`DATA_SOURCES.md`](DATA_SOURCES.md).
 
 ---
 
 ## Medallion layers
 
 ### Bronze
-Raw data landed as-is — no transformations, no cleaning. Date-partitioned so every pipeline run is preserved and reprocessable.
+Raw data landed as-is — no transformations, no cleaning. Date-partitioned so
+every pipeline run is preserved and reprocessable.
 
 - `bronze/osm/christchurch/<date>/road_segments.parquet`
 - `bronze/osm/christchurch/<date>/road_nodes.parquet`
@@ -57,17 +62,21 @@ Raw data landed as-is — no transformations, no cleaning. Date-partitioned so e
 ### Silver
 Cleaned and standardised Delta tables. Key transformations:
 
-- OSM road segments: `maxspeed` parsed to integer km/h, highway type classified into road classes (motorway, arterial, local etc.), geometry reprojected from WGS84 to NZTM2000 (EPSG:2193)
-- TMS counts: filtered to Canterbury region, dates parsed, aggregated to site/date/vehicle class grain
-- TMS sites: filtered to active sites with valid coordinates, joined to active count sites
+- OSM road segments: `maxspeed` parsed to integer km/h, highway type classified
+  into road classes (motorway, arterial, local etc.), geometry reprojected from
+  WGS84 to NZTM2000 (EPSG:2193)
+- TMS counts: filtered to Canterbury region, dates parsed, aggregated to
+  site/date/vehicle class grain
+- TMS sites: filtered to active sites with valid coordinates, joined to active
+  count sites
 
 ### Gold
 Star schema optimised for analytical queries.
 
 ```
 fact_traffic_counts
-├── date_id      → dim_time        (date, year, month, day_of_week, is_weekend)
-├── site_id      → dim_location    (site, region, easting, northing, segment_id)
+├── date_id      → dim_time         (date, year, month, day_of_week, is_weekend)
+├── site_id      → dim_location     (site, region, easting, northing, segment_id)
 ├── segment_id   → dim_road_segment (name, road_class, maxspeed_kmh, length)
 ├── vehicle_class
 └── daily_count
@@ -100,7 +109,8 @@ fact_traffic_counts
 nzta_etl_project/
 ├── cloud_related_files/
 │   ├── upload_to_s3.py              # Ingestion script — OSM (live) + Waka Kotahi (local)
-│   ├── s3_to_adls_lambda.py         # AWS Lambda — streams S3 objects to ADLS bronze
+│   ├── s3_to_adls_lambda.py         # AWS Lambda — copies S3 objects to ADLS bronze,
+│   │                                #   then triggers the Databricks workflow automatically
 │   ├── s3_trigger_setup.tf          # Terraform — S3 bucket + EventBridge + Lambda + IAM
 │   ├── build_lambda.sh              # Packages Lambda for deployment
 │   └── README_aws_ingestion.md      # AWS setup instructions
@@ -119,13 +129,13 @@ nzta_etl_project/
 
 ### Prerequisites
 - AWS CLI configured (`aws configure`)
-- Databricks CLI configured with secret scope `adls` containing the ADLS storage key
+- Databricks secret scope `adls` containing the ADLS storage key
 - Terraform installed
 - Python environment with `osmnx`, `boto3`, `geopandas`, `pandas`, `pyarrow`
+- Waka Kotahi CSVs downloaded into `downloads/` (see `DATA_SOURCES.md`)
 
 ### First-time setup
 ```bash
-# Deploy AWS infrastructure
 cd cloud_related_files
 ./build_lambda.sh
 terraform init
@@ -135,35 +145,38 @@ terraform apply -var="azure_sas_token=<your-sas-token>"
 ### Running the pipeline
 
 ```bash
-# Upload raw data to S3 — this sets the whole pipeline in motion
 python upload_to_s3.py
 ```
 
-That's it. Under the hood this:
+That's it — one command sets the entire pipeline in motion:
+
 1. Fetches the latest Christchurch road network live from OpenStreetMap
-2. Reads the Waka Kotahi CSVs from your local `downloads/` folder
+2. Reads the Waka Kotahi CSVs from `downloads/`
 3. Uploads everything to S3 under today's date partition
-4. The Lambda fires automatically for each new file and copies it to ADLS `bronze/`
-
-Then trigger the Databricks workflow to transform bronze → silver → gold:
-
-**Databricks: Jobs → road_pipeline_silver_gold → Run now with different parameters**
-
-Set `bronze_date` to today's date (e.g. `2026-03-25`). This tells the silver
-notebook which bronze partition to read from — it must match the date the
-upload script used (defaults to today if `--date` was not specified).
+4. EventBridge detects each new S3 object and invokes the Lambda
+5. Lambda copies each file to ADLS `bronze/`
+6. When the last file lands, Lambda automatically triggers the Databricks
+   workflow (`road_pipeline_silver_gold`) with today's date as the
+   `bronze_date` parameter
+7. Databricks runs silver → gold in sequence, updating all Delta tables
 
 > **Refreshing Waka Kotahi data:** When Waka Kotahi publishes a new export,
-> download it, replace the files in `downloads/`, and re-run `upload_to_s3.py`.
-> The OSM road network is always fetched live so no action is needed for that.
-> See `DATA_SOURCES.md` for download instructions.
+> download it, replace the files in `downloads/`, and re-run
+> `python upload_to_s3.py`. The OSM road network is always fetched live so
+> no action is needed for that source. See `DATA_SOURCES.md` for download
+> instructions.
 
 ### Skipping individual sources
 ```bash
-python upload_to_s3.py --skip-osm            # Waka Kotahi only (e.g. after a data refresh)
+python upload_to_s3.py --skip-osm            # Waka Kotahi only
 python upload_to_s3.py --skip-waka-kotahi    # OSM only
 python upload_to_s3.py --date 2026-03-20     # Reprocess a specific date partition
 ```
+
+> **Note on `--skip-waka-kotahi`:** If Waka Kotahi files are skipped, the
+> Lambda will not find `tms_daily_traffic_counts.parquet` and will not trigger
+> the Databricks workflow automatically. In that case, trigger the job manually
+> in Databricks with the appropriate `bronze_date`.
 
 ---
 
@@ -171,6 +184,7 @@ python upload_to_s3.py --date 2026-03-20     # Reprocess a specific date partiti
 
 - ADLS storage key stored in a **Databricks Secret Scope** — never in notebook code
 - Azure SAS token passed to Lambda via environment variable set in Terraform — never committed to Git
+- Databricks personal access token stored as a Lambda environment variable — never committed to Git
 - AWS credentials managed via `~/.aws/credentials` — never hardcoded
 - `downloads/` directory excluded from Git (see `.gitignore`)
 
@@ -178,10 +192,16 @@ python upload_to_s3.py --date 2026-03-20     # Reprocess a specific date partiti
 
 ## Known limitations & future work
 
-- **Silver/gold overwrite on each run** — currently uses `mode="overwrite"` so only the latest run's data is retained in silver and gold. A production pipeline would use Delta Lake `MERGE INTO` (upsert) to accumulate history across runs.
-- **Waka Kotahi data is a static snapshot** — the 2018–2022 CSV is a point-in-time export. The pipeline is designed to be re-run when new exports are published but does not poll for updates automatically.
-- **No orchestration trigger from Lambda to Databricks** — currently the Databricks workflow must be triggered manually after the Lambda copies files to bronze. A production setup would use Azure Data Factory or a Databricks webhook to chain these automatically.
-- **Canterbury-only silver filter** — the silver layer filters TMS counts to Canterbury region to match the Christchurch OSM road network. This could be parameterised to support other regions.
+- **Silver/gold overwrite on each run** — currently uses `mode="overwrite"` so
+  only the latest run's data is retained in silver and gold. A production
+  pipeline would use Delta Lake `MERGE INTO` (upsert) to accumulate history
+  across runs.
+- **Waka Kotahi data is a static snapshot** — the 2018–2022 CSV is a
+  point-in-time export. The pipeline is designed to be re-run when new exports
+  are published but does not poll for updates automatically.
+- **Canterbury-only silver filter** — the silver layer filters TMS counts to
+  Canterbury region to match the Christchurch OSM road network. This could be
+  parameterised to support other regions.
 
 ---
 
@@ -196,6 +216,6 @@ python upload_to_s3.py --date 2026-03-20     # Reprocess a specific date partiti
 | Data lake | Azure Data Lake Storage Gen2 |
 | Transformation | Databricks (PySpark + pandas UDFs) |
 | Table format | Delta Lake |
-| Orchestration | Databricks Workflows (Jobs) |
+| Orchestration | Databricks Workflows (Jobs) — auto-triggered by Lambda |
 | Infrastructure | Terraform |
 | Spatial ops | geopandas, shapely, pyproj (NZTM2000) |
