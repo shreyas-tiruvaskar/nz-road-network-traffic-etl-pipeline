@@ -134,13 +134,61 @@ nzta_etl_project/
 - Python environment with `osmnx`, `boto3`, `geopandas`, `pandas`, `pyarrow`
 - Waka Kotahi CSVs downloaded into `downloads/` (see `DATA_SOURCES.md`)
 
-### First-time setup
+### One-time Azure setup
+
+**1. Create a storage account and container in Azure:**
+- Storage account name: `nzetlpipeline` (or your own — update `STORAGE_ACCOUNT` in both notebooks)
+- Container name: `medallion` (or your own — update `CONTAINER` in both notebooks)
+- Enable hierarchical namespace (ADLS Gen2)
+
+**2. Generate a SAS token** for the Lambda to write to bronze/:
+- Azure Portal → Storage accounts → `nzetlpipeline` → Shared access signature
+- Allowed services: Blob
+- Allowed resource types: Container, Object
+- Permissions: Write, Create
+- Copy the SAS token — you'll need it for Terraform (`azure_sas_token`)
+
+### One-time Databricks setup
+
+**1. Create a Databricks secret scope** to store the ADLS storage key securely:
+```bash
+databricks secrets create-scope --scope adls
+databricks secrets put-secret --scope adls --key storage-account-key
+# paste your ADLS storage account key when prompted
+```
+
+**2. Import the notebooks** into your Databricks workspace:
+- Upload `notebooks/silver_layer_databricks.ipynb` and `notebooks/gold_layer_databricks.ipynb`
+  via **Workspace → Import**
+
+**3. Create the Databricks workflow:**
+- Go to **Jobs → Create job**, name it `road_pipeline_silver_gold`
+- Add Task 1: name `silver_layer`, type Notebook, path to `silver_layer_databricks`
+- Add Task 2: name `gold_layer`, type Notebook, path to `gold_layer_databricks`,
+  depends on `silver_layer`
+- Under **Advanced options**, set **Maximum concurrent runs = 1**
+- Add a job parameter: key `bronze_date`, default value today's date (e.g. `2026-03-25`)
+
+**4. Generate a Databricks personal access token** for the Lambda to trigger the workflow:
+- Databricks → Settings → Developer → Access tokens → Generate new token
+- Copy the token — you'll need it as a Lambda environment variable
+
+### One-time AWS setup
 ```bash
 cd cloud_related_files
 ./build_lambda.sh
 terraform init
 terraform apply -var="azure_sas_token=<your-sas-token>"
 ```
+
+After Terraform completes, add these environment variables to the Lambda
+(**AWS Console → Lambda → road-pipeline-s3-to-adls → Configuration → Environment variables**):
+
+| Variable | Value |
+|----------|-------|
+| `DATABRICKS_HOST` | Your Databricks workspace URL e.g. `https://adb-xxxx.azuredatabricks.net` |
+| `DATABRICKS_JOB_ID` | The numeric job ID from the workflow you created above |
+| `DATABRICKS_TOKEN` | The personal access token generated in the Databricks step above |
 
 ### Running the pipeline
 
